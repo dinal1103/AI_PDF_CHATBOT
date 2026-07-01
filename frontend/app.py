@@ -10,7 +10,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000/api/v1")
+BACKEND_URL = st.secrets.get("BACKEND_URL", os.getenv("BACKEND_URL", "http://localhost:8000/api/v1"))
 
 LLM_MODEL   = "llama-3.3-70b-versatile"
 TOP_K       = 5
