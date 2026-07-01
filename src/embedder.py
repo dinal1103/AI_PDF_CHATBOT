@@ -1,17 +1,28 @@
+"""
+
+Wraps SentenceTransformer to produce dense embeddings.
+ 
+• Uses functools.lru_cache so the model loads once per process.
+  Works in both Streamlit (via st.cache_resource wrapper in ui layer)
+  AND FastAPI (plain Python cache)
+• Supports batch encoding with a progress bar.
+"""
+
 #convert human language to number
 
 #type hints are stored as strings and evaluated only when needed.
 from __future__ import annotations
 #type annotation like List[str]
+import functools
 from typing import List
 
 import numpy as np
-import streamlit as st
 
-@st.cache_resource(show_spinner = False)#caches the model so it loads only once and reuse
+
+@functools.lru_cache(maxsize=4)#caches the model so it loads only once and reuse
 
 def load_embedder(model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
-    #load model MiniLM and return ready to use model
+    #load and cache model MiniLM and return ready to use model(Cache per process)
     from sentence_transformers import SentenceTransformer
     return SentenceTransformer(model_name)
 
@@ -31,7 +42,7 @@ class Embedder:#wrapper class
                 show_progess: bool = False,
                 ) -> np.ndarray:#convert many chunk together to vector
             
-        embeddings = self.model.emcode(
+        embeddings = self.model.encode(
                 texts,
                 batch_size = batch_size,
                 show_progess_bar = show_progess,
