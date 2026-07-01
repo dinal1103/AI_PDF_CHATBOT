@@ -28,7 +28,7 @@ class UploadResponse(BaseModel):
 
 class AskRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000)
-    model: str = Field(default="llama3-8b-8192")
+    model: str = Field(default="llama-3.3-70b-versatile")
     top_k: int = Field(default=5, ge=1, le=10)
     temperature: float = Field(default=0.2, ge=0.0, le=1.0)
     use_mmr: bool = Field(default=True)

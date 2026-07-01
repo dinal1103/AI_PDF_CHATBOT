@@ -25,6 +25,7 @@ dist/
 venv/
 env/
 ENV/
+myenv/
 
 # ============================================================================
 # Environment Variables / Secrets

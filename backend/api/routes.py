@@ -129,7 +129,7 @@ async def ask(payload: AskRequest):
 @router.get("/ask/stream")
 async def ask_stream(
     query: str,
-    model: str = "llama3-8b-8192",
+    model: str = "llama-3.3-70b-versatile",
     top_k: int = 5,
     temperature: float = 0.2,
     use_mmr: bool = True,
