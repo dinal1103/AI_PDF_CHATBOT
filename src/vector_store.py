@@ -1,4 +1,10 @@
-#store vector in FAISS
+"""
+FAISS-based in-memory vector store.
+ 
+• Uses IndexFlatIP (inner product) on L2-normalised vectors to cosine similarity.
+• Stores chunk texts + metadata in a parallel list; no external DB required.
+• MMR (Maximal Marginal Relevance) re-ranking to reduce redundancy.
+"""
 from __future__ import annotations
 
 import numpy as np
@@ -16,27 +22,27 @@ class RetrievalResult:#if faiss return 5 relevant chunk then each represent one 
     page : Optional[int] = None
 
 
-class FATSSVectorStore:#all releated to vectordb stay in mini db manager
-
+class FAISSVectorStore:#all releated to vectordb stay in mini db manager
+     #Lightweight FAISS wrapper that also stores chunk texts for retrieval.
     def __init__(self, dimension: int):
         self.dimension = dimension#for any word give in 384d
         self.index = faiss.IndexFlatIP(dimension)#create empty vectordb with dimension
-        self.texts: List[str] = []#matching text separately
-        self.sources: List[str] = []
-        self.pages: List[Optional[int]] = []
+        self._texts: List[str] = []#matching text separately
+        self._sources: List[str] = []
+        self._pages: List[Optional[int]] = []
 
     
     def add(#insert vector to faiss
             self,
             embeddings: np.ndarray, #(n,dim) float32 if 5 vector(5,384)
-            texts = List[str],
+            texts : List[str],
             sources: Optional[List[str]] = None,
             pages: Optional[List[Optional[int]]] = None,
     ) -> None:
 
             assert embeddings.shape[0] == len(texts)#check no. of vector eual to no of para
             self.index.add(embeddings)#copy every emb to faiss
-            self.texts.extend(texts)#store metadata
+            self._texts.extend(texts)#store metadata
             self._sources.extend(sources or [""] * len(texts))
             self._pages.extend(pages or [None] * len(texts))
 
@@ -87,7 +93,7 @@ class FATSSVectorStore:#all releated to vectordb stay in mini db manager
         
         cand_embeds = np.array([self._get_embedding(c.chunk_id) for c in candidates] , dtype=np.float32)#reconstruct orginial vector
         selected_indices : List[int] = []#selected 
-        remaining = List(range(len(candidates)))
+        remaining = list(range(len(candidates)))
 
         while len(selected_indices) < top_k and remaining:
             if not selected_indices:
@@ -126,5 +132,5 @@ class FATSSVectorStore:#all releated to vectordb stay in mini db manager
          #clearn all vector and metadata
          self.index.reset()
          self._texts.clear()
-         self.sources.clear()
+         self._sources.clear()
          self._pages.clear()
