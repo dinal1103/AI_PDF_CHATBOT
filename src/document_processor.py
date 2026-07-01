@@ -3,14 +3,6 @@ Document Processor
 ──────────────────
 Handles text extraction from PDF / DOCX / TXT files and splits
 the extracted text into overlapping chunks ready for embedding.
-
-Supported file types
----------------------
-• PDF   → pdfplumber (layout-aware) with PyMuPDF fallback
-• DOCX  → python-docx
-• TXT   → plain read (UTF-8 → latin-1 → cp1252 fallback chain)
-
-No framework dependency — works in Streamlit, FastAPI, or plain Python.
 """
 
 from __future__ import annotations
@@ -22,11 +14,8 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 
-# ── Data structures ──────────────────────────────────────────────────────────
-
 @dataclass
 class Chunk:
-    """A single text chunk with provenance metadata."""
     text: str
     chunk_id: int
     page: Optional[int] = None
@@ -41,7 +30,6 @@ class Chunk:
 
 @dataclass
 class DocumentInfo:
-    """High-level document statistics."""
     name: str
     file_type: str
     total_pages: int = 0
@@ -52,44 +40,41 @@ class DocumentInfo:
     extra: dict = field(default_factory=dict)
 
 
-# ── Text extraction helpers ──────────────────────────────────────────────────
-
 def _clean_text(text: str) -> str:
-    """Normalise unicode, collapse whitespace, strip control chars."""
     text = unicodedata.normalize("NFKC", text)
-    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)  # control chars
-    text = re.sub(r"\r\n|\r", "\n", text)                            # line endings
-    text = re.sub(r"[ \t]+", " ", text)                              # horiz space
-    text = re.sub(r"\n{3,}", "\n\n", text)                           # blank lines
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    text = re.sub(r"\r\n|\r", "\n", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 
-def extract_from_pdf(file_bytes: bytes) -> tuple[str, int]:
-    """Return (full_text, page_count) from PDF bytes."""
+# FIXED: now returns per-page text list instead of one joined string,
+# so chunks can carry an accurate page number instead of always None/wrong.
+def extract_from_pdf(file_bytes: bytes) -> tuple[list[str], int]:
+    """Return (list_of_cleaned_page_texts, page_count) from PDF bytes."""
     try:
         import pdfplumber
-        text_pages: list[str] = []
+        pages_text: list[str] = []
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
             n_pages = len(pdf.pages)
             for page in pdf.pages:
                 t = page.extract_text() or ""
-                text_pages.append(t)
-        return _clean_text("\n\n".join(text_pages)), n_pages
+                pages_text.append(_clean_text(t))
+        return pages_text, n_pages
     except Exception:
         pass
 
-    # Fallback: PyMuPDF
     try:
         import fitz  # PyMuPDF
         doc = fitz.open(stream=file_bytes, filetype="pdf")
-        text_pages = [page.get_text() for page in doc]
-        return _clean_text("\n\n".join(text_pages)), len(doc)
+        pages_text = [_clean_text(page.get_text()) for page in doc]
+        return pages_text, len(doc)
     except Exception as e:
         raise RuntimeError(f"PDF extraction failed: {e}") from e
 
 
 def extract_from_docx(file_bytes: bytes) -> str:
-    """Return full text from DOCX bytes."""
     try:
         from docx import Document
         doc = Document(io.BytesIO(file_bytes))
@@ -100,7 +85,6 @@ def extract_from_docx(file_bytes: bytes) -> str:
 
 
 def extract_from_txt(file_bytes: bytes) -> str:
-    """Return full text from TXT bytes (tries UTF-8, then latin-1)."""
     for enc in ("utf-8", "latin-1", "cp1252"):
         try:
             return _clean_text(file_bytes.decode(enc))
@@ -109,19 +93,7 @@ def extract_from_txt(file_bytes: bytes) -> str:
     raise RuntimeError("Could not decode text file.")
 
 
-# ── Chunker ──────────────────────────────────────────────────────────────────
-
 class SemanticChunker:
-    """
-    Splits text into overlapping chunks on sentence / paragraph boundaries.
-
-    Strategy
-    --------
-    1. Split text into sentences (regex-based — no NLTK dependency).
-    2. Greedily accumulate sentences until chunk_size chars is reached.
-    3. Keep last N sentences as overlap for the next chunk.
-    """
-
     _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 
     def __init__(self, chunk_size: int = 500, chunk_overlap: int = 50):
@@ -132,21 +104,24 @@ class SemanticChunker:
         parts = self._SENTENCE_END.split(text)
         return [p.strip() for p in parts if p.strip()]
 
-    def split(self, text: str, source: str = "") -> list[Chunk]:
+    # FIXED: split() now accepts an optional `page` so each chunk from a
+    # single page gets tagged correctly, instead of chunking the whole
+    # joined document and losing page boundaries.
+    def split(self, text: str, source: str = "", page: Optional[int] = None,
+              start_chunk_id: int = 0) -> list[Chunk]:
         sentences = self._sentences(text)
         chunks: list[Chunk] = []
         current: list[str] = []
         current_len = 0
-        chunk_id = 0
+        chunk_id = start_chunk_id
 
         for sent in sentences:
             sent_len = len(sent)
             if current_len + sent_len > self.chunk_size and current:
                 chunk_text = " ".join(current)
-                chunks.append(Chunk(text=chunk_text, chunk_id=chunk_id, source=source))
+                chunks.append(Chunk(text=chunk_text, chunk_id=chunk_id, source=source, page=page))
                 chunk_id += 1
 
-                # Build overlap from tail sentences
                 overlap_buf: list[str] = []
                 overlap_len = 0
                 for s in reversed(current):
@@ -162,47 +137,51 @@ class SemanticChunker:
             current_len += sent_len
 
         if current:
-            chunks.append(Chunk(text=" ".join(current), chunk_id=chunk_id, source=source))
+            chunks.append(Chunk(text=" ".join(current), chunk_id=chunk_id, source=source, page=page))
 
         return chunks
 
-
-# ── Public API ───────────────────────────────────────────────────────────────
 
 def process_document(
     uploaded_file,
     chunk_size: int = 500,
     chunk_overlap: int = 50,
 ) -> tuple[list[Chunk], DocumentInfo]:
-    """
-    Extract text from an uploaded file object and split into chunks.
-    Works with Streamlit UploadedFile or any file-like object with
-    .name and .read() attributes.
-
-    Returns
-    -------
-    chunks    : list[Chunk]
-    doc_info  : DocumentInfo
-    """
     name = uploaded_file.name
     ext = name.rsplit(".", 1)[-1].lower()
     file_bytes = uploaded_file.read()
 
+    chunker = SemanticChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     pages = 0
+    all_chunks: list[Chunk] = []
+
     if ext == "pdf":
-        text, pages = extract_from_pdf(file_bytes)
+        # FIXED: chunk per-page so page numbers are accurate, then
+        # continue chunk_id sequentially across pages.
+        pages_text, pages = extract_from_pdf(file_bytes)
+        full_text_for_stats = "\n\n".join(pages_text)
+        next_id = 0
+        for page_num, page_text in enumerate(pages_text, start=1):
+            if not page_text.strip():
+                continue
+            page_chunks = chunker.split(page_text, source=name, page=page_num, start_chunk_id=next_id)
+            all_chunks.extend(page_chunks)
+            next_id += len(page_chunks)
+        text = full_text_for_stats
+
     elif ext in ("docx", "doc"):
         text = extract_from_docx(file_bytes)
+        all_chunks = chunker.split(text, source=name, page=None)
+
     elif ext == "txt":
         text = extract_from_txt(file_bytes)
+        all_chunks = chunker.split(text, source=name, page=None)
+
     else:
         raise ValueError(f"Unsupported file type: .{ext}")
 
     if not text.strip():
         raise ValueError("No text could be extracted from the document.")
-
-    chunker = SemanticChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-    chunks = chunker.split(text, source=name)
 
     doc_info = DocumentInfo(
         name=name,
@@ -210,7 +189,7 @@ def process_document(
         total_pages=pages,
         total_chars=len(text),
         total_words=len(text.split()),
-        total_chunks=len(chunks),
+        total_chunks=len(all_chunks),
     )
 
-    return chunks, doc_info
+    return all_chunks, doc_info

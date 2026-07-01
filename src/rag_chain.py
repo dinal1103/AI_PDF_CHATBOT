@@ -23,6 +23,7 @@ from typing import Generator, List, Tuple, Union
 
 from .vector_store import FAISSVectorStore, RetrievalResult
 from .embedder import Embedder
+from .reranker import Reranker
 
 
 # ── Prompt template ──────────────────────────────────────────────────────────
@@ -61,11 +62,21 @@ def _build_user_message(query: str, context: str) -> str:
     )
 
 
-def _retrieve(vector_store, embedder, query, top_k, use_mmr):
+def _retrieve(vector_store, embedder, query, top_k, use_mmr, use_rerank=True):
     query_emb = embedder.embed_query(query)
+    # ADDED: fetch a wider candidate pool when reranking so the cross-encoder
+    # has something meaningful to re-sort, then trim to top_k after rerank.
+    fetch_k = top_k * 4 if use_rerank else top_k
     if use_mmr:
-        return vector_store.search_mmr(query_emb, top_k=top_k, fetch_k=top_k * 3)
-    return vector_store.search(query_emb, top_k=top_k)
+        candidates = vector_store.search_mmr(query_emb, top_k=fetch_k, fetch_k=fetch_k * 3)
+    else:
+        candidates = vector_store.search(query_emb, top_k=fetch_k)
+
+    if use_rerank and candidates:
+        candidates = _get_reranker().rerank(query, candidates, top_k=top_k)
+    else:
+        candidates = candidates[:top_k]
+    return candidates
 
 
 # ── Groq client (process-level cache, framework-agnostic) ────────────────────
@@ -76,6 +87,9 @@ def _get_groq_client(api_key: str):
     from groq import Groq
     return Groq(api_key=api_key)
 
+@functools.lru_cache(maxsize=1)
+def _get_reranker():
+    return Reranker()
 
 # ── Public RAG function (single-turn, no history) ────────────────────────────
 
@@ -98,7 +112,7 @@ def answer_query(
     answer  : streaming generator (if stream=True) or full string (if stream=False)
     sources : list of RetrievalResult used as context
     """
-    results = _retrieve(vector_store, embedder, query, top_k, use_mmr)
+    results = _retrieve(vector_store, embedder, query, top_k, use_mmr, use_rerank=True)
 
     if not results:
         no_doc = "No document has been indexed yet. Please upload a document first."
@@ -159,7 +173,7 @@ def answer_with_history(
 
     Works in Streamlit, FastAPI (sync /ask or SSE /ask/stream), or CLI.
     """
-    results = _retrieve(vector_store, embedder, query, top_k, use_mmr)
+    results = _retrieve(vector_store, embedder, query, top_k, use_mmr, use_rerank=True)
 
     if not results:
         no_doc = "No document indexed. Please upload a document first."

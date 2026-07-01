@@ -1,29 +1,60 @@
-"""
-frontend/app.py
-───────────────
-Streamlit frontend that talks to the FastAPI backend via HTTP.
-Run this AFTER the backend is running on port 8000.
-
-Start backend:   uvicorn backend.main:app --port 8000
-Start frontend:  streamlit run frontend/app.py
-"""
-
 import streamlit as st
 import httpx
 import os
+import time
 
-# ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="DocuMind AI",
     page_icon="🧠",
-    layout="wide",
-    initial_sidebar_state="expanded",
+    layout="centered",
+    initial_sidebar_state="collapsed",
 )
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000/api/v1")
 
+LLM_MODEL   = "llama-3.3-70b-versatile"
+TOP_K       = 5
+TEMPERATURE = 0.2
+USE_MMR     = True
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ADDED: custom CSS — dark card styling, accent color, no default Streamlit look
+st.markdown("""
+<style>
+    #MainMenu, footer, header {visibility: hidden;}
+    .block-container {padding-top: 2rem; max-width: 780px;}
+    .stChatMessage {
+        border-radius: 14px;
+        padding: 4px 10px;
+    }
+    .doc-pill {
+        background: linear-gradient(90deg, #1f2937, #111827);
+        border: 1px solid #374151;
+        border-radius: 10px;
+        padding: 10px 14px;
+        font-size: 0.9rem;
+        margin-bottom: 8px;
+    }
+    .stat-strip {
+        display: flex;
+        gap: 14px;
+        font-size: 0.78rem;
+        color: #9ca3af;
+        margin-top: 4px;
+    }
+    .stat-strip span {
+        background: #1f2937;
+        padding: 3px 9px;
+        border-radius: 6px;
+    }
+    h1 {
+        background: linear-gradient(90deg, #a78bfa, #60a5fa);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-weight: 800;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 
 def _backend_status() -> dict:
     try:
@@ -38,7 +69,7 @@ def _upload(file) -> dict:
         r = httpx.post(
             f"{BACKEND_URL}/upload",
             files={"file": (file.name, file.read(), "application/octet-stream")},
-            timeout=60,
+            timeout=360,
         )
         r.raise_for_status()
         return r.json()
@@ -53,14 +84,10 @@ def _ask(query: str, history: list) -> dict:
         r = httpx.post(
             f"{BACKEND_URL}/ask",
             json={
-                "query": query,
-                "history": history,
-                "model": st.session_state.get("llm_model", "llama3-8b-8192"),
-                "top_k": st.session_state.get("top_k", 5),
-                "temperature": st.session_state.get("temperature", 0.2),
-                "use_mmr": st.session_state.get("use_mmr", True),
+                "query": query, "history": history, "model": LLM_MODEL,
+                "top_k": TOP_K, "temperature": TEMPERATURE, "use_mmr": USE_MMR,
             },
-            timeout=60,
+            timeout=180,
         )
         r.raise_for_status()
         return r.json()
@@ -70,117 +97,97 @@ def _ask(query: str, history: list) -> dict:
         return {"error": str(e)}
 
 
-# ── Session state ─────────────────────────────────────────────────────────────
-
 defaults = {
-    "messages": [],
-    "doc_loaded": False,
-    "doc_name": None,
-    "llm_model": "llama3-8b-8192",
-    "top_k": 5,
-    "temperature": 0.2,
-    "use_mmr": True,
+    "messages": [], "doc_loaded": False, "doc_name": None,
+    "doc_chunks": 0, "doc_words": 0,
 }
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-
-with st.sidebar:
-    st.markdown("## ⚙️ Configuration")
-    st.divider()
-
-    status = _backend_status()
-    if status.get("status") == "unreachable":
-        st.error("❌ Backend unreachable. Run: `uvicorn backend.main:app --port 8000`")
-    elif status.get("status") == "ready":
-        st.success(f"✅ Backend ready · {status.get('total_chunks', 0)} chunks loaded")
-    else:
-        st.info("ℹ️ Backend online. No document loaded yet.")
-
-    st.divider()
-    st.markdown("### 🤖 Model Settings")
-
-    st.session_state.llm_model = st.selectbox(
-        "LLM Model",
-         ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it"],
-        index=0,
-    )
-    st.session_state.temperature = st.slider("Temperature", 0.0, 1.0, 0.2, 0.05)
-    st.session_state.top_k = st.slider("Top-K chunks", 1, 10, 5)
-    st.session_state.use_mmr = st.toggle("MMR re-ranking", value=True)
-
-    st.divider()
-    if st.button("🗑️ Clear Chat", use_container_width=True):
-        st.session_state.messages = []
-        st.rerun()
-
-
-# ── Main layout ───────────────────────────────────────────────────────────────
+# REMOVED: dead commented-out sidebar block entirely (was unused clutter)
 
 st.markdown("# 🧠 DocuMind AI")
-st.caption("Upload any document · Ask anything · Get cited answers")
+st.caption("Upload a document · Ask anything · Get cited answers")
+st.divider()
 
-col_left, col_right = st.columns([1, 1], gap="large")
+uploaded = st.file_uploader(
+    "Upload your document", type=["pdf", "docx", "txt"], label_visibility="collapsed",
+)
 
-with col_left:
-    st.markdown("### 📁 Upload Document")
-    uploaded = st.file_uploader("PDF, DOCX, or TXT", type=["pdf", "docx", "txt"])
-
-    if uploaded and (not st.session_state.doc_loaded or st.session_state.doc_name != uploaded.name):
-        with st.spinner("Uploading and indexing…"):
-            result = _upload(uploaded)
-
+if uploaded and (not st.session_state.doc_loaded or st.session_state.doc_name != uploaded.name):
+    with st.status(f"Processing **{uploaded.name}**...", expanded=True) as s:
+        st.write("Uploading file...")
+        result = _upload(uploaded)
         if "error" in result:
-            st.error(f"❌ {result['error']}")
+            s.update(label="❌ Upload failed", state="error")
+            st.error(result["error"])
         else:
+            st.write(f"Chunking complete — {result['total_chunks']} chunks")
+            st.write("Embedding and indexing...")
             st.session_state.doc_loaded = True
             st.session_state.doc_name = result["filename"]
+            st.session_state.doc_chunks = result["total_chunks"]
+            st.session_state.doc_words = result["total_words"]
             st.session_state.messages = []
-            st.success(
-                f"✅ **{result['filename']}** — "
-                f"{result['total_chunks']} chunks, {result['total_words']:,} words"
-            )
+            s.update(label=f"✅ **{result['filename']}** ready", state="complete", expanded=False)
 
-            # Stats
-            cols = st.columns(4)
-            cols[0].metric("Chunks", result["total_chunks"])
-            cols[1].metric("Words", f"{result['total_words']:,}")
-            cols[2].metric("Pages", result["total_pages"] or "—")
-            cols[3].metric("Type", result["file_type"])
+if st.session_state.doc_loaded:
+    # CHANGED: name stays visible, chunk/word stats moved into a collapsed
+    # expander instead of being shown always — reduces clutter for end users
+    st.markdown(
+        f"""<div class="doc-pill">📄 <b>{st.session_state.doc_name}</b> ready</div>""",
+        unsafe_allow_html=True,
+    )
+    with st.expander("Document details", expanded=False):
+        st.markdown(
+            f"**Chunks indexed:** {st.session_state.doc_chunks}  \n"
+            f"**Total words:** {st.session_state.doc_words:,}"
+        )
 
-with col_right:
-    st.markdown("### 💬 Ask Your Document")
+st.divider()
 
-    if not st.session_state.doc_loaded:
-        st.info("👈 Upload a document first.", icon="📄")
-    else:
-        # Display history
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]):
-                st.write(msg["content"])
-                if msg.get("sources"):
-                    with st.expander(f"📄 {len(msg['sources'])} sources used", expanded=False):
-                        for s in msg["sources"]:
-                            st.markdown(
-                                f"**Excerpt {s['chunk_id']+1}** · score `{s['score']:.3f}`\n\n"
-                                f"> {s['text'][:300]}…"
-                            )
+if not st.session_state.doc_loaded:
+    st.info("👆 Upload a document above to start asking questions.", icon="📄")
+else:
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            if msg.get("sources"):
+                with st.expander(f"📄 {len(msg['sources'])} source excerpts", expanded=False):
+                    for s in msg["sources"]:
+                        page_str = f" · page {s['page']}" if s.get("page") else ""
+                        st.markdown(
+                            f"**Excerpt {s['chunk_id'] + 1}** · relevance `{s['score']:.2f}`{page_str}\n\n"
+                            f"> {s['text'][:300]}{'…' if len(s['text']) > 300 else ''}"
+                        )
+            # ADDED: latency stat strip per assistant message
+            if msg.get("latency") is not None:
+                st.markdown(
+                    f"""<div class="stat-strip">
+                        <span>⏱ {msg['latency']:.1f}s</span>
+                        <span>🔎 {msg.get('chunks_retrieved', 0)} chunks</span>
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
 
-        # Chat input
-        query = st.chat_input("Ask a question…")
-        if query:
-            st.session_state.messages.append({"role": "user", "content": query})
+    query = st.chat_input(f"Ask a question about {st.session_state.doc_name}…")
 
-            history = [
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages[:-1]
-            ]
+    if query:
+        with st.chat_message("user"):
+            st.markdown(query)
+        st.session_state.messages.append({"role": "user", "content": query})
 
+        history = [
+            {"role": m["role"], "content": m["content"]}
+            for m in st.session_state.messages[:-1]
+        ]
+
+        with st.chat_message("assistant"):
             with st.spinner("Thinking…"):
+                t0 = time.time()  # ADDED: latency tracking
                 result = _ask(query, history)
+                latency = time.time() - t0
 
             if "error" in result:
                 answer = f"⚠️ {result['error']}"
@@ -189,9 +196,26 @@ with col_right:
                 answer = result["answer"]
                 sources = result["sources"]
 
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": answer,
-                "sources": sources,
-            })
-            st.rerun()
+            st.markdown(answer)
+
+            if sources:
+                with st.expander(f"📄 {len(sources)} source excerpts", expanded=False):
+                    for s in sources:
+                        page_str = f" · page {s['page']}" if s.get("page") else ""
+                        st.markdown(
+                            f"**Excerpt {s['chunk_id'] + 1}** · relevance `{s['score']:.2f}`{page_str}\n\n"
+                            f"> {s['text'][:300]}{'…' if len(s['text']) > 300 else ''}"
+                        )
+
+            st.markdown(
+                f"""<div class="stat-strip">
+                    <span>⏱ {latency:.1f}s</span>
+                    <span>🔎 {len(sources)} chunks</span>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+
+        st.session_state.messages.append({
+            "role": "assistant", "content": answer, "sources": sources,
+            "latency": latency, "chunks_retrieved": len(sources),  # ADDED
+        })

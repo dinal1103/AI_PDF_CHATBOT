@@ -10,7 +10,7 @@ Interactive API docs:
     http://localhost:8000/docs      ← Swagger UI
     http://localhost:8000/redoc     ← ReDoc
 """
-
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -30,9 +30,10 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
-            "http://localhost:8501",   # Streamlit default
-            "http://localhost:3000",   # React dev server (future)
+            "http://localhost:8501",
+            "http://localhost:3000",
             "http://127.0.0.1:8501",
+            os.getenv("FRONTEND_URL", "*"),  # ADDED: your deployed Streamlit URL
         ],
         allow_credentials=True,
         allow_methods=["*"],
