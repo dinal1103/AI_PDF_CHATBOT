@@ -1,35 +1,35 @@
-# convert pdf to plain text and then convert into overlapping chunks ready for embeddings
+#Handles text extraction from PDF / DOCX / TXT files and splits
+#the extracted text into overlapping chunks ready for embedding.
 #support file
 #pdf,doc,txt
 from __future__ import annotations
-
+ 
 import io
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from typing import List,Optional
+from typing import List, Optional
 
 
 @dataclass
 class Chunk:
-
-    text : str
-    chunk_id : int
-    page : Optional[int] = None
-    source : str = ""
+    """A single text chunk with provenance metadata."""
+    text: str
+    chunk_id: int
+    page: Optional[int] = None
+    source: str = ""
     word_count: int = 0
     char_count: int = 0
-
-    def __post__init__(self):
-        self.word_count = len(self.text_split())
+ 
+    def __post_init__(self):
+        self.word_count = len(self.text.split())
         self.char_count = len(self.text)
-
 
 
 @dataclass
 class DocumentInfo:
-
-    name : str
+    """High-level document statistics."""
+    name: str
     file_type: str
     total_pages: int = 0
     total_chars: int = 0
@@ -40,18 +40,19 @@ class DocumentInfo:
 
 
 def _clean_text(text: str) -> str:
-
-    text = unicodedata.normalize("NFKC" , text)#strange unicdoe character to standrat one 
-    text = re.sub(r" [\x00-\x08\x0b\xoc-\x1f\x7f] " , "" , text)#remove these
-    text = re.sub(r"\r\n|\r" , "\n" ,text)
-    text = re.sub(r"[ \t]+" ," " , text)
-    text = re.sub(r"\n{3,}" , "\n\n" , text)
-
+    """Normalise unicode, collapse whitespace, strip control chars."""
+    text = unicodedata.normalize("NFKC", text)
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)  # control chars
+    text = re.sub(r"\r\n|\r", "\n", text)                            # line endings
+    text = re.sub(r"[ \t]+", " ", text)                              # horiz space
+    text = re.sub(r"\n{3,}", "\n\n", text)                           # blank lines
     return text.strip()
 
 
 
+
 def extract_from_pdf(file_bytes : bytes) -> tuple[str,int]:
+    """return (full_text , page_count) from pdf bytes"""
     try:
 
         import pdfplumber
@@ -83,7 +84,8 @@ def extract_from_pdf(file_bytes : bytes) -> tuple[str,int]:
         raise RuntimeError(f"PDF extraction failed : {e}") from e
 
 
-def extract_from_doc(file_bytes : bytes) -> str:
+def extract_from_docx(file_bytes : bytes) -> str:
+    """return full text from docx bytes"""
     try:
 
         from docx import Document#library reading and working with doc file 
@@ -98,6 +100,7 @@ def extract_from_doc(file_bytes : bytes) -> str:
     
 
 def extract_from_txt(file_bytes: bytes) -> str:
+    """return full text from txt bytes"""
     for enc in ("utf-8","latin-1","cp1252"):#text files usinf different encoding
 
         try:
@@ -111,7 +114,15 @@ def extract_from_txt(file_bytes: bytes) -> str:
 
 
 class SemanticChunker:
-
+    """
+       Splits text into overlapping chunks on sentence / paragraph boundaries.
+    
+       Strategy
+       --------
+       1. Split text into sentences (regex-based — no NLTK dependency).
+       2. Greedily accumulate sentences until chunk_size chars is reached.
+       3. Keep last N sentences as overlap for the next chunk.
+    """
     _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")#ending of sentence
 
     def __init__(self, chunk_size: int = 500, chunk_overlap: int = 50):
@@ -171,8 +182,18 @@ class SemanticChunker:
 
 #starting point uploaded file first here 
 def process_document( uploaded_file, chunk_size: int = 500 , chunk_overlap: int = 50) -> tuple[list[Chunk] , DocumentInfo]:
+    """
+    Extract text from an uploaded file object and split into chunks.
+    Works with Streamlit UploadedFile or any file-like object with
+    .name and .read() attributes.
+ 
+    Returns
+    -------
+    chunks    : list[Chunk]
+    doc_info  : DocumentInfo
+    """
     name = uploaded_file.name
-    ext = name.rsplit("." , 1).lower()#extension - from name separate extension and then lower 
+    ext = name.rsplit("." , 1)[-1].lower()#extension - from name separate extension and then lower 
     file_bytes = uploaded_file.read()#read file 
 
     pages = 0
@@ -181,7 +202,7 @@ def process_document( uploaded_file, chunk_size: int = 500 , chunk_overlap: int 
         text , pages = extract_from_pdf(file_bytes)#for pdf 
 
     elif ext in ("docx" , "doc"):
-        text = extract_from_doc(file_bytes)#for doc
+        text = extract_from_docx(file_bytes)#for doc
 
     elif ext == "txt":
         text = extract_from_txt(file_bytes)#for text
