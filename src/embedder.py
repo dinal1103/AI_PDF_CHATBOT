@@ -32,20 +32,20 @@ class Embedder:#wrapper class
     def __init__(self , model_name : str = "sentence-transformers/all-MiniLM-L6-v2"):
         self.model_name = model_name
         self.model = load_embedder(model_name)
-        self.dimension: int = self._model.get_sentence_embedding_dimension()
+        self.dimension: int = self.model.get_sentence_embedding_dimension()
 
 
     def embed_texts(
                 self,
                 texts: List[str], 
                 batch_size: int=64,#instead of one chunk 64 together
-                show_progess: bool = False,
+                show_progress: bool = False,
                 ) -> np.ndarray:#convert many chunk together to vector
-            
+
         embeddings = self.model.encode(
                 texts,
                 batch_size = batch_size,
-                show_progess_bar = show_progess,
+                show_progress_bar = show_progress,
                 convert_to_numpy = True,
                 normalize_embeddings = True,#cosine similarity via dot product
                 # all arrow in same length so direction matter which means meaning 
@@ -58,7 +58,7 @@ class Embedder:#wrapper class
 
     def embed_query(self, query: str) -> np.ndarray:
             #embed a single query string to shap(dimension,)
-            emb = self.model_encode(
+            emb = self.model.encode(
                 [query],
                 convert_to_numpy = True,
                 normalize_embeddings = True,
